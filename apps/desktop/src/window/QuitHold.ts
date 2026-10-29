@@ -46,6 +46,18 @@ export function makeQuitShortcutHandler(
   let repeatCadenceMs = 0;
   // A key release must not invalidate a pending direct-mode read; only superseding/cancelled presses do.
   let generation = 0;
+  // preventDefault must be decided synchronously, so Off uses the last mode read.
+  let knownMode: QuitConfirmationMode | undefined;
+  let modeRead = 0;
+
+  const readMode = () => {
+    const read = ++modeRead;
+    return options.getMode().then((resolvedMode) => {
+      if (read === modeRead) knownMode = resolvedMode;
+      return resolvedMode;
+    });
+  };
+  readMode().catch(() => undefined);
 
   const clearWatchdog = () => {
     if (watchdog !== undefined) {
@@ -129,6 +141,17 @@ export function makeQuitShortcutHandler(
       return;
     }
 
+    if (knownMode === "off") {
+      // Passing Cmd+Q through would reach the macOS app menu's Quit accelerator.
+      if (options.platform === "darwin") event.preventDefault();
+      if (!input.isAutoRepeat) {
+        lastPressAt = 0;
+        release();
+        readMode().catch(() => undefined);
+      }
+      return;
+    }
+
     event.preventDefault();
 
     if (input.isAutoRepeat) {
@@ -155,9 +178,13 @@ export function makeQuitShortcutHandler(
     const pressGeneration = generation;
     holding = true;
     heldSince = now;
-    void options.getMode().then(
+    void readMode().then(
       (resolvedMode) => {
         if (generation !== pressGeneration) return;
+        if (resolvedMode === "off") {
+          release();
+          return;
+        }
         if (resolvedMode === "direct") {
           quitNow();
           return;
