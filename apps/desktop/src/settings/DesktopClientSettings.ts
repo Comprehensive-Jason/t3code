@@ -192,33 +192,49 @@ export const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
   const latestRef = yield* Ref.make(Option.none<ClientSettings>());
+  // Each write starts a generation; a read or write publishes only if no newer write began.
+  const generationRef = yield* Ref.make(0);
+  const publish = (generation: number, settings: Option.Option<ClientSettings>) =>
+    Ref.get(generationRef).pipe(
+      Effect.flatMap((current) =>
+        current === generation ? Ref.set(latestRef, settings) : Effect.void,
+      ),
+    );
 
   return DesktopClientSettings.of({
-    get: readClientSettings(fileSystem, environment.clientSettingsPath).pipe(
-      Effect.tap((settings) => Ref.set(latestRef, settings)),
+    get: Ref.get(generationRef).pipe(
+      Effect.flatMap((generation) =>
+        readClientSettings(fileSystem, environment.clientSettingsPath).pipe(
+          Effect.tap((settings) => publish(generation, settings)),
+        ),
+      ),
       Effect.withSpan("desktop.clientSettings.get"),
     ),
     peek: Ref.get(latestRef),
     set: Effect.fn("desktop.clientSettings.set")(function (settings) {
-      return Ref.set(latestRef, Option.some(settings)).pipe(
-        Effect.andThen(crypto.randomUUIDv4()),
-        Effect.map((uuid) => uuid.replace(/-/g, "")),
-        Effect.mapError(
-          (cause) =>
-            new DesktopClientSettingsWriteError({
-              operation: "create-temporary-file-name",
-              path: environment.clientSettingsPath,
-              cause,
-            }),
-        ),
-        Effect.flatMap((suffix) =>
-          writeClientSettings({
-            fileSystem,
-            path,
-            settingsPath: environment.clientSettingsPath,
-            settings,
-            suffix,
-          }),
+      return Ref.updateAndGet(generationRef, (generation) => generation + 1).pipe(
+        Effect.flatMap((generation) =>
+          crypto.randomUUIDv4().pipe(
+            Effect.map((uuid) => uuid.replace(/-/g, "")),
+            Effect.mapError(
+              (cause) =>
+                new DesktopClientSettingsWriteError({
+                  operation: "create-temporary-file-name",
+                  path: environment.clientSettingsPath,
+                  cause,
+                }),
+            ),
+            Effect.flatMap((suffix) =>
+              writeClientSettings({
+                fileSystem,
+                path,
+                settingsPath: environment.clientSettingsPath,
+                settings,
+                suffix,
+              }),
+            ),
+            Effect.andThen(publish(generation, Option.some(settings))),
+          ),
         ),
       );
     }),
