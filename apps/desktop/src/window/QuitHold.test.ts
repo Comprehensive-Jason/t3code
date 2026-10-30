@@ -28,6 +28,7 @@ function makeHarness(options?: {
   mode?: QuitConfirmationMode;
   platform?: NodeJS.Platform;
   getMode?: () => Promise<QuitConfirmationMode>;
+  peekMode?: () => QuitConfirmationMode | undefined;
 }) {
   const notifications: Array<QuitShortcutHintEvent> = [];
   const concealWindow = vi.fn();
@@ -35,6 +36,7 @@ function makeHarness(options?: {
   const handler = makeQuitShortcutHandler({
     platform: options?.platform ?? "darwin",
     getMode: options?.getMode ?? (() => Promise.resolve(options?.mode ?? "hold")),
+    peekMode: options?.peekMode ?? (() => undefined),
     notify: (event) => notifications.push(event),
     concealWindow,
     quit,
@@ -121,7 +123,7 @@ describe("makeQuitShortcutHandler", () => {
 
       await harness.send(makeInput({ type: "keyUp" }));
 
-      resolvers[1]?.(mode);
+      resolvers[0]?.(mode);
       await Promise.resolve();
       await Promise.resolve();
 
@@ -139,14 +141,14 @@ describe("makeQuitShortcutHandler", () => {
     await harness.send(makeInput({ type: "keyUp" }));
     vi.advanceTimersByTime(QUIT_DOUBLE_PRESS_MS + 100);
     await harness.send(makeInput({}));
-    expect(resolvers).toHaveLength(3);
+    expect(resolvers).toHaveLength(2);
 
-    resolvers[1]?.("direct");
+    resolvers[0]?.("direct");
     await Promise.resolve();
     await Promise.resolve();
     expect(harness.quit).not.toHaveBeenCalled();
 
-    resolvers[2]?.("hold");
+    resolvers[1]?.("hold");
     await harness.holdFor(QUIT_HOLD_DURATION_MS + 200);
     await harness.send(makeInput({ type: "keyUp" }));
     expect(harness.quit).toHaveBeenCalledTimes(1);
@@ -164,8 +166,7 @@ describe("makeQuitShortcutHandler", () => {
   it.each(["win32", "linux"] as const)(
     "passes Ctrl+Q through without quitting when Off on %s",
     async (platform) => {
-      const harness = makeHarness({ mode: "off", platform });
-      await Promise.resolve();
+      const harness = makeHarness({ mode: "off", peekMode: () => "off", platform });
       const ctrlQ = { meta: false, control: true };
       await harness.send(makeInput(ctrlQ));
       await harness.holdFor(QUIT_HOLD_DURATION_MS + 200, ctrlQ);
@@ -179,8 +180,7 @@ describe("makeQuitShortcutHandler", () => {
   );
 
   it("keeps Cmd+Q from reaching the app menu when Off on macOS", async () => {
-    const harness = makeHarness({ mode: "off", platform: "darwin" });
-    await Promise.resolve();
+    const harness = makeHarness({ mode: "off", peekMode: () => "off", platform: "darwin" });
     await harness.send(makeInput({}));
     await harness.send(makeInput({}));
 
@@ -189,27 +189,30 @@ describe("makeQuitShortcutHandler", () => {
     expect(harness.notifications).toEqual([]);
   });
 
-  it("follows a mode change on the next press", async () => {
-    let mode: QuitConfirmationMode = "hold";
+  it("does not quit on a quick second press once Off is known, even with a read pending", async () => {
+    let peeked: QuitConfirmationMode = "hold";
     const ctrlQ = { meta: false, control: true };
-    const harness = makeHarness({ platform: "win32", getMode: () => Promise.resolve(mode) });
-    await Promise.resolve();
-
-    mode = "off";
+    const harness = makeHarness({
+      platform: "win32",
+      getMode: () => new Promise(() => undefined),
+      peekMode: () => peeked,
+    });
     await harness.send(makeInput(ctrlQ));
     await harness.send(makeInput({ ...ctrlQ, type: "keyUp" }));
-    expect(harness.preventDefault).toHaveBeenCalledTimes(1);
-    expect(harness.notifications).toEqual([]);
-
-    mode = "direct";
-    vi.advanceTimersByTime(QUIT_DOUBLE_PRESS_MS + 100);
+    peeked = "off";
+    vi.advanceTimersByTime(QUIT_DOUBLE_PRESS_MS - 100);
     await harness.send(makeInput(ctrlQ));
-    await harness.send(makeInput({ ...ctrlQ, type: "keyUp" }));
-    expect(harness.preventDefault).toHaveBeenCalledTimes(1);
+
     expect(harness.quit).not.toHaveBeenCalled();
+    expect(harness.preventDefault).toHaveBeenCalledTimes(1);
+  });
 
-    vi.advanceTimersByTime(QUIT_DOUBLE_PRESS_MS + 100);
-    await harness.send(makeInput(ctrlQ));
-    expect(harness.quit).toHaveBeenCalledTimes(1);
+  it("does not quit when the mode read settles as Off", async () => {
+    const harness = makeHarness({ mode: "off", platform: "win32" });
+    await harness.send(makeInput({ meta: false, control: true }));
+    await harness.holdFor(QUIT_HOLD_DURATION_MS + 200, { meta: false, control: true });
+
+    expect(harness.quit).not.toHaveBeenCalled();
+    expect(harness.notifications).toEqual([]);
   });
 });

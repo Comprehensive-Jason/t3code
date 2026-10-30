@@ -153,6 +153,7 @@ describe("DesktopClientSettings", () => {
           onboardingCompletedAt: "2026-09-05T12:00:00.000Z",
         };
         yield* settings.set(savedSettings);
+        assert.deepEqual(yield* settings.peek, Option.some(savedSettings));
         const savedContents = yield* fileSystem.readFileString(environment.clientSettingsPath);
         const cause = PlatformError.systemError({
           _tag: failure.reason,
@@ -179,6 +180,7 @@ describe("DesktopClientSettings", () => {
         assert.equal(error.operation, "read-file");
         assert.equal(error.path, environment.clientSettingsPath);
         assert.strictEqual(error.cause, cause);
+        assert.deepEqual(yield* retryableSettings.peek, Option.none());
         assert.equal(
           yield* fileSystem.readFileString(environment.clientSettingsPath),
           savedContents,
@@ -186,6 +188,7 @@ describe("DesktopClientSettings", () => {
 
         failRead = false;
         assert.deepEqual(yield* retryableSettings.get, Option.some(savedSettings));
+        assert.deepEqual(yield* retryableSettings.peek, Option.some(savedSettings));
       }),
     ),
   );
