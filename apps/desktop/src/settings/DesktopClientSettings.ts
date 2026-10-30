@@ -10,6 +10,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Ref from "effect/Ref";
+import * as Semaphore from "effect/Semaphore";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 
@@ -191,6 +192,7 @@ export const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
+  const writeLock = yield* Semaphore.make(1);
   const latestRef = yield* Ref.make(Option.none<ClientSettings>());
   // Each write starts a generation; a read or write publishes only if no newer write began.
   const generationRef = yield* Ref.make(0);
@@ -236,6 +238,8 @@ export const make = Effect.gen(function* () {
             Effect.andThen(publish(generation, Option.some(settings))),
           ),
         ),
+        // Renames must land in generation order, or disk ends up older than peek.
+        Semaphore.withPermit(writeLock),
       );
     }),
   });
